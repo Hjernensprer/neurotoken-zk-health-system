@@ -1,22 +1,70 @@
-name: Security Audit (npm + pip)
+name: Security Audit (smart: npm + pip)
 
 on:
   schedule:
-    - cron: "0 2 * * *"
+    # Weekly (Mon 02:10 UTC) – bytt tidspunkt om du vil
+    - cron: "10 2 * * 1"
   workflow_dispatch:
 
 jobs:
   audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Node audit
+      - name: Prepare report
         run: |
-          npm install
-          npm audit --audit-level=moderate || true
+          echo "Security Audit Report" > security-audit-report.txt
+          echo "Repo: $GITHUB_REPOSITORY" >> security-audit-report.txt
+          echo "Run:  $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >> security-audit-report.txt
+          echo "Date: $(date -u)" >> security-audit-report.txt
+          echo "" >> security-audit-report.txt
 
-      - name: Python audit
+      - name: Node audit (only if package.json exists)
         run: |
-          pip install pip-audit || true
-          pip-audit || true
+          set +e
+          PACKAGES=$(find . -name package.json -not -path "./node_modules/*" -not -path "./__MACOSX/*" -not -path "./.git/*")
+          if [ -z "$PACKAGES" ]; then
+            echo "NODE: No package.json found -> skipping." | tee -a security-audit-report.txt
+            exit 0
+          fi
+
+          echo "NODE: package.json found -> auditing..." | tee -a security-audit-report.txt
+          for p in $PACKAGES; do
+            d=$(dirname "$p")
+            echo "" | tee -a security-audit-report.txt
+            echo "---- Node project: $d ----" | tee -a security-audit-report.txt
+            (cd "$d" && npm install --ignore-scripts && npm audit --audit-level=moderate) 2>&1 | tee -a "$GITHUB_WORKSPACE/security-audit-report.txt"
+          done
+          exit 0
+
+      - name: Python audit (only if requirements.txt exists)
+        run: |
+          set +e
+          REQS=$(find . -name requirements.txt -not -path "./__MACOSX/*" -not -path "./.git/*")
+          if [ -z "$REQS" ]; then
+            echo "" | tee -a security-audit-report.txt
+            echo "PYTHON: No requirements.txt found -> skipping." | tee -a security-audit-report.txt
+            exit 0
+          fi
+
+          python -m pip install --upgrade pip >/dev/null 2>&1 || true
+          pip install pip-audit >/dev/null 2>&1 || true
+
+          echo "" | tee -a security-audit-report.txt
+          echo "PYTHON: requirements.txt found -> auditing..." | tee -a security-audit-report.txt
+          for r in $REQS; do
+            echo "" | tee -a security-audit-report.txt
+            echo "---- Python deps: $r ----" | tee -a security-audit-report.txt
+            pip-audit -r "$r" 2>&1 | tee -a security-audit-report.txt
+          done
+          exit 0
+
+      - name: Upload audit report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-audit-report
+          path: security-audit-report.txt
